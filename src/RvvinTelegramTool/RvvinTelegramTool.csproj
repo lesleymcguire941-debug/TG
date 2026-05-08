@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWindowsForms>true</UseWindowsForms>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <AssemblyName>RvvinTelegramTool</AssemblyName>
+    <RootNamespace>RvvinTelegramTool</RootNamespace>
+    <Version>0.1.0</Version>
+    <Authors>Rvvin</Authors>
+  </PropertyGroup>
+</Project>
