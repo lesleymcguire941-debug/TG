@@ -10,10 +10,13 @@ public sealed class MainForm : Form
     private readonly AppFolders _folders;
     private readonly AccountService _accountService;
     private readonly GroupFilterService _groupFilterService = new();
+    private readonly AiTokenMonitorService _aiTokenMonitorService;
     private readonly BindingList<TelegramAccount> _accounts = new();
     private readonly BindingList<GroupScanResult> _groups = new();
+    private readonly BindingList<AiTokenUsageRecord> _aiTokenUsage = new();
     private readonly DataGridView _accountGrid = new();
     private readonly DataGridView _groupGrid = new();
+    private readonly DataGridView _aiTokenGrid = new();
     private readonly Panel _contentPanel = new();
     private readonly Label _statusLabel = new();
     private CheckBox _iosLoginCheckBox = new();
@@ -21,11 +24,25 @@ public sealed class MainForm : Form
     private CheckBox _syncTelegramUpdatesCheckBox = new();
     private CheckBox _txtLogCheckBox = new();
     private CheckBox _localNetworkCheckBox = new();
+    private int _tokenQuota = 1_000_000;
+    private int _tokenAlertThreshold = 100_000;
+    private TextBox _tokenQuotaTextBox = new();
+    private TextBox _tokenAlertTextBox = new();
+    private TextBox _tokenProviderTextBox = new();
+    private TextBox _tokenModelTextBox = new();
+    private TextBox _tokenScenarioTextBox = new();
+    private TextBox _promptTokensTextBox = new();
+    private TextBox _completionTokensTextBox = new();
+    private TextBox _cachedTokensTextBox = new();
+    private TextBox _tokenCostTextBox = new();
+    private TextBox _tokenNoteTextBox = new();
+    private Label _tokenSummaryLabel = new();
 
     public MainForm(AppFolders folders)
     {
         _folders = folders;
         _accountService = new AccountService(folders);
+        _aiTokenMonitorService = new AiTokenMonitorService(folders);
 
         Text = "Rvvin工具开发";
         StartPosition = FormStartPosition.CenterScreen;
@@ -34,6 +51,7 @@ public sealed class MainForm : Form
         ForeColor = Color.Black;
         Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Regular, GraphicsUnit.Point);
 
+        LoadAiTokenMonitorState();
         BuildShell();
         ShowAccountPage();
     }
@@ -71,7 +89,8 @@ public sealed class MainForm : Form
         leftBar.Controls.Add(CreateNavButton("采集群组", () => ShowPlaceholder("采集群组", "此栏目已预留，用于后续接入合规的群组采集能力。")));
         leftBar.Controls.Add(CreateNavButton("自动群发", () => ShowPlaceholder("自动群发", "为避免滥发消息，此版本仅保留入口，不提供批量骚扰发送功能。")));
         leftBar.Controls.Add(CreateNavButton("群组筛选", ShowGroupFilterPage));
-        leftBar.Controls.Add(CreateNavButton("数据报表", () => ShowPlaceholder("数据报表", "第 5 个栏目预留：后续可展示账号/群组检测统计。")));
+        leftBar.Controls.Add(CreateNavButton("AI-Token监控", ShowAiTokenMonitorPage));
+        leftBar.Controls.Add(CreateNavButton("数据报表", () => ShowPlaceholder("数据报表", "第 6 个栏目预留：后续可展示账号/群组检测统计。")));
         leftBar.Controls.Add(CreateNavButton("全局设置", ShowSettingsPage));
 
         _contentPanel.Dock = DockStyle.Fill;
@@ -151,6 +170,62 @@ public sealed class MainForm : Form
         _contentPanel.Controls.Add(header);
     }
 
+    private void ShowAiTokenMonitorPage()
+    {
+        _contentPanel.Controls.Clear();
+
+        var header = CreatePageHeader("AI-Token监控", "记录 AI API Token 余额、今日/本月/累计用量、历史消耗明细和低余额预警。支持导入 CSV/TSV 历史账单、手动补录、删除、保存与导出。 ");
+        var summaryPanel = new TableLayoutPanel { Dock = DockStyle.Top, Height = 86, ColumnCount = 4, RowCount = 2, BackColor = Color.FromArgb(248, 251, 255), Padding = new Padding(8) };
+        summaryPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 230));
+        summaryPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 230));
+        summaryPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
+        summaryPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+
+        _tokenQuotaTextBox = new TextBox { Text = _tokenQuota.ToString(), Width = 110 };
+        _tokenAlertTextBox = new TextBox { Text = _tokenAlertThreshold.ToString(), Width = 110 };
+        _tokenSummaryLabel = new Label { Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, Font = new Font(Font.FontFamily, 10F, FontStyle.Bold) };
+
+        summaryPanel.Controls.Add(CreateInlinePanel("Token 总额度", _tokenQuotaTextBox), 0, 0);
+        summaryPanel.Controls.Add(CreateInlinePanel("余额预警阈值", _tokenAlertTextBox), 1, 0);
+        summaryPanel.Controls.Add(CreateActionButton("刷新统计", RefreshAiTokenSummary), 2, 0);
+        summaryPanel.Controls.Add(_tokenSummaryLabel, 3, 0);
+        summaryPanel.SetRowSpan(_tokenSummaryLabel, 2);
+        summaryPanel.Controls.Add(CreateActionButton("导入历史用量", ImportAiTokenUsage), 0, 1);
+        summaryPanel.Controls.Add(CreateActionButton("保存监控数据", SaveAiTokenUsage), 1, 1);
+        summaryPanel.Controls.Add(CreateActionButton("导出用量报表", ExportAiTokenUsage), 2, 1);
+
+        var inputPanel = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 118, FlowDirection = FlowDirection.LeftToRight, WrapContents = true, Padding = new Padding(0, 6, 0, 0) };
+        _tokenProviderTextBox = CreateSmallTextBox("OpenAI", 86);
+        _tokenModelTextBox = CreateSmallTextBox("gpt-4o-mini", 120);
+        _tokenScenarioTextBox = CreateSmallTextBox("账号/群组分析", 130);
+        _promptTokensTextBox = CreateSmallTextBox("0", 72);
+        _completionTokensTextBox = CreateSmallTextBox("0", 72);
+        _cachedTokensTextBox = CreateSmallTextBox("0", 72);
+        _tokenCostTextBox = CreateSmallTextBox("0", 72);
+        _tokenNoteTextBox = CreateSmallTextBox("手动补录", 180);
+        inputPanel.Controls.AddRange(new Control[]
+        {
+            CreateInlinePanel("供应商", _tokenProviderTextBox),
+            CreateInlinePanel("模型", _tokenModelTextBox),
+            CreateInlinePanel("场景", _tokenScenarioTextBox),
+            CreateInlinePanel("输入", _promptTokensTextBox),
+            CreateInlinePanel("输出", _completionTokensTextBox),
+            CreateInlinePanel("缓存", _cachedTokensTextBox),
+            CreateInlinePanel("费用$", _tokenCostTextBox),
+            CreateInlinePanel("备注", _tokenNoteTextBox),
+            CreateActionButton("新增用量", AddAiTokenUsage),
+            CreateActionButton("删除勾选", DeleteSelectedAiTokenUsage)
+        });
+
+        ConfigureAiTokenGrid();
+        RefreshAiTokenSummary();
+
+        _contentPanel.Controls.Add(_aiTokenGrid);
+        _contentPanel.Controls.Add(inputPanel);
+        _contentPanel.Controls.Add(summaryPanel);
+        _contentPanel.Controls.Add(header);
+    }
+
     private void ShowSettingsPage()
     {
         _contentPanel.Controls.Clear();
@@ -225,6 +300,50 @@ public sealed class MainForm : Form
         AddColumn(_accountGrid, nameof(TelegramAccount.Status), "状态", 120);
         AddColumn(_accountGrid, nameof(TelegramAccount.RestrictionNote), "中文检测结果", 420);
         AddColumn(_accountGrid, nameof(TelegramAccount.ImportedAt), "导入时间", 150);
+    }
+
+    private static TextBox CreateSmallTextBox(string text, int width)
+    {
+        return new TextBox { Text = text, Width = width, Margin = new Padding(0, 4, 10, 4) };
+    }
+
+    private static FlowLayoutPanel CreateInlinePanel(string labelText, Control input)
+    {
+        var panel = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            Margin = new Padding(0, 4, 10, 4)
+        };
+        panel.Controls.Add(new Label { Text = labelText, AutoSize = true, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(0, 7, 6, 0) });
+        panel.Controls.Add(input);
+        return panel;
+    }
+
+    private void ConfigureAiTokenGrid()
+    {
+        if (_aiTokenGrid.DataSource is not null)
+        {
+            return;
+        }
+
+        _aiTokenGrid.Dock = DockStyle.Fill;
+        _aiTokenGrid.AutoGenerateColumns = false;
+        _aiTokenGrid.AllowUserToAddRows = false;
+        _aiTokenGrid.BackgroundColor = Color.White;
+        _aiTokenGrid.DataSource = _aiTokenUsage;
+        AddColumn(_aiTokenGrid, new DataGridViewCheckBoxColumn { DataPropertyName = nameof(AiTokenUsageRecord.Selected), HeaderText = "勾选", Width = 56 });
+        AddColumn(_aiTokenGrid, nameof(AiTokenUsageRecord.UsedAt), "使用时间", 150);
+        AddColumn(_aiTokenGrid, nameof(AiTokenUsageRecord.Provider), "供应商", 90);
+        AddColumn(_aiTokenGrid, nameof(AiTokenUsageRecord.Model), "模型", 130);
+        AddColumn(_aiTokenGrid, nameof(AiTokenUsageRecord.Scenario), "业务场景", 150);
+        AddColumn(_aiTokenGrid, nameof(AiTokenUsageRecord.PromptTokens), "输入Token", 90);
+        AddColumn(_aiTokenGrid, nameof(AiTokenUsageRecord.CompletionTokens), "输出Token", 90);
+        AddColumn(_aiTokenGrid, nameof(AiTokenUsageRecord.CachedTokens), "缓存Token", 90);
+        AddColumn(_aiTokenGrid, nameof(AiTokenUsageRecord.TotalTokens), "合计Token", 90);
+        AddColumn(_aiTokenGrid, nameof(AiTokenUsageRecord.CostUsd), "费用USD", 90);
+        AddColumn(_aiTokenGrid, nameof(AiTokenUsageRecord.Note), "备注", 240);
     }
 
     private void ConfigureGroupGrid()
@@ -374,6 +493,114 @@ public sealed class MainForm : Form
             group.ChineseResult
         })));
         SetStatus($"群组筛选结果已导出：{path}");
+    }
+
+    private void LoadAiTokenMonitorState()
+    {
+        var settings = _aiTokenMonitorService.LoadSettings();
+        _tokenQuota = settings.TokenQuota;
+        _tokenAlertThreshold = settings.AlertThreshold;
+
+        foreach (var record in _aiTokenMonitorService.LoadUsage())
+        {
+            _aiTokenUsage.Add(record);
+        }
+    }
+
+    private void ImportAiTokenUsage()
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = "选择 AI Token 历史用量 CSV/TSV 文件",
+            Filter = "Usage files (*.csv;*.tsv;*.txt)|*.csv;*.tsv;*.txt|All files (*.*)|*.*"
+        };
+
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        var imported = _aiTokenMonitorService.ImportCsv(dialog.FileName);
+        foreach (var record in imported)
+        {
+            _aiTokenUsage.Add(record);
+        }
+
+        RefreshAiTokenSummary();
+        SetStatus($"已导入 {imported.Count} 条 AI Token 历史用量记录。 ");
+    }
+
+    private void AddAiTokenUsage()
+    {
+        var record = _aiTokenMonitorService.CreateManualRecord(
+            _tokenProviderTextBox.Text,
+            _tokenModelTextBox.Text,
+            _tokenScenarioTextBox.Text,
+            ParseNonNegativeInt(_promptTokensTextBox.Text),
+            ParseNonNegativeInt(_completionTokensTextBox.Text),
+            ParseNonNegativeInt(_cachedTokensTextBox.Text),
+            ParseNonNegativeDecimal(_tokenCostTextBox.Text),
+            _tokenNoteTextBox.Text);
+
+        _aiTokenUsage.Insert(0, record);
+        RefreshAiTokenSummary();
+        SetStatus("已新增一条 AI Token 用量记录。 ");
+    }
+
+    private void DeleteSelectedAiTokenUsage()
+    {
+        foreach (var record in _aiTokenUsage.Where(record => record.Selected).ToList())
+        {
+            _aiTokenUsage.Remove(record);
+        }
+
+        RefreshAiTokenSummary();
+        SetStatus("已删除勾选的 AI Token 用量记录。 ");
+    }
+
+    private void SaveAiTokenUsage()
+    {
+        _tokenQuota = ParsePositiveInt(_tokenQuotaTextBox.Text, 1_000_000);
+        _tokenAlertThreshold = ParseNonNegativeInt(_tokenAlertTextBox.Text);
+        _aiTokenMonitorService.SaveSettings(new AiTokenMonitorSettings { TokenQuota = _tokenQuota, AlertThreshold = _tokenAlertThreshold });
+        _aiTokenMonitorService.SaveUsage(_aiTokenUsage);
+        RefreshAiTokenSummary();
+        SetStatus("AI Token 监控数据已保存到本地 settings/ai-token-usage.json 和 ai-token-monitor-settings.json。 ");
+    }
+
+    private void ExportAiTokenUsage()
+    {
+        var path = _aiTokenMonitorService.ExportCsv(_aiTokenUsage);
+        SetStatus($"AI Token 用量报表已导出：{path}");
+    }
+
+    private void RefreshAiTokenSummary()
+    {
+        _tokenQuota = ParsePositiveInt(_tokenQuotaTextBox.Text, _tokenQuota);
+        _tokenAlertThreshold = ParseNonNegativeInt(_tokenAlertTextBox.Text);
+
+        var summary = _aiTokenMonitorService.BuildSummary(
+            _aiTokenUsage,
+            _tokenQuota,
+            _tokenAlertThreshold);
+
+        _tokenSummaryLabel.Text = $"已用 {summary.UsedTokens:N0} / 剩余 {summary.RemainingTokens:N0} / 今日 {summary.TodayTokens:N0} / 本月 {summary.MonthTokens:N0} / 费用 ${summary.UsedCostUsd:0.####} / {summary.Status}";
+        _aiTokenGrid.Refresh();
+    }
+
+    private static int ParsePositiveInt(string value, int fallback)
+    {
+        return int.TryParse(value, out var result) && result > 0 ? result : fallback;
+    }
+
+    private static int ParseNonNegativeInt(string value)
+    {
+        return int.TryParse(value, out var result) ? Math.Max(0, result) : 0;
+    }
+
+    private static decimal ParseNonNegativeDecimal(string value)
+    {
+        return decimal.TryParse(value, out var result) ? Math.Max(0, result) : 0;
     }
 
     private void SaveSettings()
